@@ -10,6 +10,7 @@
 #include <sys/stat.h>
 #include <termios.h>
 #include <unistd.h>
+#include <signal.h>
 
 #define _POSIX_SOURCE 1 // POSIX compliant source
 
@@ -23,10 +24,23 @@ int fd = -1;           // File descriptor for open serial port
 struct termios oldtio; // Serial port settings to restore on closing
 volatile int STOP = FALSE;
 
+// Alarm mechanism
+volatile int alarmEnabled = 0;
+volatile int alarmCount = 0;
+int maxRetransmissions = 3;
+
 int openSerialPort(const char *serialPort, int baudRate);
 int closeSerialPort();
 int readByteSerialPort(unsigned char *byte);
 int writeBytesSerialPort(const unsigned char *bytes, int nBytes);
+
+// Alarm handler
+void alarmHandler(int signal)
+{
+    alarmEnabled = 0;   // alarm expired
+    alarmCount++;
+    printf("Alarm #%d received: retransmitting SET\n", alarmCount);
+}
 
 // ---------------------------------------------------
 // MAIN
@@ -57,47 +71,79 @@ int main(int argc, char *argv[])
 
     printf("Serial port %s opened\n", serialPort);
 
+    // Install alarm handler
+    struct sigaction act;
+    memset(&act, 0, sizeof(act));
+    act.sa_handler = alarmHandler;
+    if (sigaction(SIGALRM, &act, NULL) == -1)
+    {
+        perror("sigaction");
+        exit(1);
+    }
+
     // Build SET frame
     unsigned char SET[5];
-    SET[0] = 0x7E;   // FLAG
-    SET[1] = 0x03;   // A (Sender)
-    SET[2] = 0x03;   // C (SET)
+    SET[0] = 0x7E;         // FLAG
+    SET[1] = 0x03;         // A (Sender)
+    SET[2] = 0x03;         // C (SET)
     SET[3] = SET[1] ^ SET[2]; // BCC1
-    SET[4] = 0x7E;   // FLAG
+    SET[4] = 0x7E;         // FLAG
 
-    int bytes = writeBytesSerialPort(SET, 5);
-    printf("SET frame sent: ");
-    for (int i = 0; i < 5; i++) printf("0x%02X ", SET[i]);
-    printf("\n");
-
-    // Wait for UA frame from receiver
-    unsigned char buffer[5];
-    int index = 0;
+    int retransmissions = 0;
     STOP = FALSE;
 
-    while (STOP == FALSE)
+    while (!STOP && retransmissions <= maxRetransmissions)
     {
-        unsigned char byte;
-        int res = readByteSerialPort(&byte);
-        if (res > 0)
-        {
-            buffer[index++] = byte;
+        // Send SET frame
+        writeBytesSerialPort(SET, 5);
+        printf("SET frame sent: ");
+        for (int i = 0; i < 5; i++) printf("0x%02X ", SET[i]);
+        printf("\n");
 
-            if (index == 5)
+        // Start alarm (3 seconds)
+        alarmEnabled = 1;
+        alarm(3);
+
+        unsigned char buffer[5];
+        int index = 0;
+
+        // Wait for UA frame
+        while (!STOP && alarmEnabled)
+        {
+            unsigned char byte;
+            int res = readByteSerialPort(&byte);
+            if (res > 0)
             {
-                if (buffer[0] == 0x7E && buffer[1] == 0x01 && buffer[2] == 0x07 &&
-                    buffer[3] == (buffer[1] ^ buffer[2]) && buffer[4] == 0x7E)
+                printf("Byte received: 0x%02X\n", byte); // debug
+                buffer[index++] = byte;
+
+                if (index == 5)
                 {
-                    printf("UA frame received! Connection established.\n");
-                    STOP = TRUE;
+                    if (buffer[0] == 0x7E && buffer[1] == 0x01 && buffer[2] == 0x07 &&
+                        buffer[3] == (buffer[1] ^ buffer[2]) && buffer[4] == 0x7E)
+                    {
+                        printf("UA frame received! Connection established.\n");
+                        STOP = TRUE;
+                        alarm(0); // disable alarm
+                    }
+                    index = 0;
                 }
-                index = 0;
             }
+        }
+
+        // If alarm fired, increment retransmission counter
+        if (!STOP)
+        {
+            retransmissions++;
+            printf("Retransmission attempt %d\n", retransmissions);
         }
     }
 
-    // Wait until all bytes have been written to the serial port
-    sleep(1);
+    // Max retransmissions reached
+    if (!STOP)
+    {
+        printf("Failed to establish connection after %d attempts\n", maxRetransmissions);
+    }
 
     // Close serial port
     if (closeSerialPort() < 0)
