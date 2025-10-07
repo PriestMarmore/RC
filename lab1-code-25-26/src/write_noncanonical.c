@@ -1,4 +1,4 @@
-// Example of how to read from the serial port in non-canonical mode
+// Example of how to write to the serial port in non-canonical mode
 //
 // Modified by: Eduardo Nuno Almeida [enalmeida@fe.up.pt]
 
@@ -57,33 +57,24 @@ int main(int argc, char *argv[])
 
     printf("Serial port %s opened\n", serialPort);
 
-    // Read from serial port until the 'z' char is received.
+    // Create string to send
+    unsigned char buf[BUF_SIZE] = {0};
 
-    // NOTE: This while() cycle is a simple example showing how to read from the serial port.
-    // It must be changed in order to respect the specifications of the protocol indicated in the Lab guide.
-
-    // TODO: Save the received bytes in a buffer array and print it at the end of the program.
-    int nBytesBuf = 0;
-
-    while (STOP == FALSE)
+    for (int i = 0; i < BUF_SIZE; i++)
     {
-        // Read one byte from serial port.
-        // NOTE: You must check how many bytes were actually read by reading the return value.
-        // In this example, we assume that the byte is always read, which may not be true.
-        unsigned char byte;
-        int bytes = readByteSerialPort(&byte);
-        nBytesBuf += bytes;
-
-        printf("Byte received: %c\n", byte);
-
-        if (byte == 'z')
-        {
-            printf("Received 'z' char. Stop reading from serial port.\n");
-            STOP = TRUE;
-        }
+        buf[i] = 'a' + i % 26;
     }
 
-    printf("Total bytes received: %d\n", nBytesBuf);
+    // In non-canonical mode, '\n' does not end the writing.
+    // Test this condition by placing a '\n' in the middle of the buffer.
+    // The whole buffer must be sent even with the '\n'.
+    buf[5] = '\n';
+
+    int bytes = writeBytesSerialPort(buf, BUF_SIZE);
+    printf("%d bytes written to serial port\n", bytes);
+
+    // Wait until all bytes have been written to the serial port
+    sleep(1);
 
     // Close serial port
     if (closeSerialPort() < 0)
