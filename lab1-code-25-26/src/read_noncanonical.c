@@ -17,7 +17,7 @@
 #define TRUE 1
 
 #define BAUDRATE 38400
-#define BUF_SIZE 256
+// #define BUF_SIZE 256
 
 int fd = -1;           // File descriptor for open serial port
 struct termios oldtio; // Serial port settings to restore on closing
@@ -57,33 +57,35 @@ int main(int argc, char *argv[])
 
     printf("Serial port %s opened\n", serialPort);
 
-    // Read from serial port until the 'z' char is received.
-
-    // NOTE: This while() cycle is a simple example showing how to read from the serial port.
-    // It must be changed in order to respect the specifications of the protocol indicated in the Lab guide.
-
-    // TODO: Save the received bytes in a buffer array and print it at the end of the program.
-    int nBytesBuf = 0;
+    unsigned char buffer[5];
+    int index = 0;
 
     while (STOP == FALSE)
     {
-        // Read one byte from serial port.
-        // NOTE: You must check how many bytes were actually read by reading the return value.
-        // In this example, we assume that the byte is always read, which may not be true.
         unsigned char byte;
-        int bytes = readByteSerialPort(&byte);
-        nBytesBuf += bytes;
-
-        printf("Byte received: %c\n", byte);
-
-        if (byte == 'z')
+        int res = readByteSerialPort(&byte);
+        if (res > 0)
         {
-            printf("Received 'z' char. Stop reading from serial port.\n");
-            STOP = TRUE;
+            printf("Byte received: 0x%02X\n", byte);
+            buffer[index++] = byte;
+
+            if (index == 5)
+            {
+                if (buffer[0] == 0x7E && buffer[1] == 0x03 && buffer[2] == 0x03 &&
+                    buffer[3] == (buffer[1] ^ buffer[2]) && buffer[4] == 0x7E)
+                {
+                    printf("SET frame received!\n");
+                    STOP = TRUE;
+
+                    // Send UA frame
+                    unsigned char UA[5] = {0x7E, 0x01, 0x07, 0x01 ^ 0x07, 0x7E};
+                    writeBytesSerialPort(UA, 5);
+                    printf("UA frame sent.\n");
+                }
+                index = 0;
+            }
         }
     }
-
-    printf("Total bytes received: %d\n", nBytesBuf);
 
     // Close serial port
     if (closeSerialPort() < 0)

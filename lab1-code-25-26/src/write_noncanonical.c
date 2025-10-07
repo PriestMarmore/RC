@@ -17,7 +17,7 @@
 #define TRUE 1
 
 #define BAUDRATE 38400
-#define BUF_SIZE 256
+// #define BUF_SIZE 256
 
 int fd = -1;           // File descriptor for open serial port
 struct termios oldtio; // Serial port settings to restore on closing
@@ -57,21 +57,44 @@ int main(int argc, char *argv[])
 
     printf("Serial port %s opened\n", serialPort);
 
-    // Create string to send
-    unsigned char buf[BUF_SIZE] = {0};
+    // Build SET frame
+    unsigned char SET[5];
+    SET[0] = 0x7E;   // FLAG
+    SET[1] = 0x03;   // A (Sender)
+    SET[2] = 0x03;   // C (SET)
+    SET[3] = SET[1] ^ SET[2]; // BCC1
+    SET[4] = 0x7E;   // FLAG
 
-    for (int i = 0; i < BUF_SIZE; i++)
+    int bytes = writeBytesSerialPort(SET, 5);
+    printf("SET frame sent: ");
+    for (int i = 0; i < 5; i++) printf("0x%02X ", SET[i]);
+    printf("\n");
+
+    // Wait for UA frame from receiver
+    unsigned char buffer[5];
+    int index = 0;
+    STOP = FALSE;
+
+    while (STOP == FALSE)
     {
-        buf[i] = 'a' + i % 26;
+        unsigned char byte;
+        int res = readByteSerialPort(&byte);
+        if (res > 0)
+        {
+            buffer[index++] = byte;
+
+            if (index == 5)
+            {
+                if (buffer[0] == 0x7E && buffer[1] == 0x01 && buffer[2] == 0x07 &&
+                    buffer[3] == (buffer[1] ^ buffer[2]) && buffer[4] == 0x7E)
+                {
+                    printf("UA frame received! Connection established.\n");
+                    STOP = TRUE;
+                }
+                index = 0;
+            }
+        }
     }
-
-    // In non-canonical mode, '\n' does not end the writing.
-    // Test this condition by placing a '\n' in the middle of the buffer.
-    // The whole buffer must be sent even with the '\n'.
-    buf[5] = '\n';
-
-    int bytes = writeBytesSerialPort(buf, BUF_SIZE);
-    printf("%d bytes written to serial port\n", bytes);
 
     // Wait until all bytes have been written to the serial port
     sleep(1);
