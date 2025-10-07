@@ -1,7 +1,5 @@
 
 // Example of how to read from the serial port in non-canonical mode
-//
-// Modified by: Eduardo Nuno Almeida [enalmeida@fe.up.pt]
 
 #include <fcntl.h>
 #include <stdio.h>
@@ -65,6 +63,9 @@ int main(int argc, char *argv[])
     // It must be changed in order to respect the specifications of the protocol indicated in the Lab guide.
 
     // TODO: Save the received bytes in a buffer array and print it at the end of the program.
+    
+    // OLD: Read arbitrary bytes until BUF_SIZE
+    /*
     int nBytesBuf = 0;
   
     while (nBytesBuf != BUF_SIZE)
@@ -78,7 +79,10 @@ int main(int argc, char *argv[])
 
         printf("Byte received: 0x%02X\n", byte);
     }
+    */
 
+    // OLD: Send UA frame immediately (incorrect)
+    /*
     printf("Total bytes received: %d\n", nBytesBuf);
 
     unsigned char buf[BUF_SIZE] = {0};
@@ -91,8 +95,58 @@ int main(int argc, char *argv[])
     int bytes= writeBytesSerialPort(buf,BUF_SIZE);
     printf("%d bytes written to serial port\n", bytes);
     sleep(1);
+    */
 
+    // -----------------------------
+    // NEW: Send SET frame
+    // -----------------------------
+    unsigned char setFrame[5] = {FLAG, A, SET, A ^ SET, FLAG};
+    int bytesWritten = writeBytesSerialPort(setFrame, 5);
+    if (bytesWritten != 5) {
+        perror("writeBytesSerialPort");
+        closeSerialPort();
+        exit(-1);
+    }
+    printf("SET frame sent: ");
+    for(int i=0; i<5; i++) printf("0x%02X ", setFrame[i]);
+    printf("\n");
 
+    // -----------------------------
+    // NEW: Wait for UA frame
+    // -----------------------------
+    unsigned char uaFrame[5];
+    int nReceived = 0;
+    unsigned char rxByte;
+
+    printf("Waiting for UA frame...\n");
+
+    while (nReceived < 5)
+    {
+        int r = readByteSerialPort(&rxByte);
+        if (r > 0)
+        {
+            uaFrame[nReceived++] = rxByte;
+            printf("Byte received: 0x%02X\n", rxByte);
+        }
+    }
+
+    // -----------------------------
+    // NEW: Validate UA frame
+    // -----------------------------
+    if (uaFrame[0] == FLAG &&
+        uaFrame[1] == A &&       // Receiver might also use A=0x03
+        uaFrame[2] == UA &&
+        uaFrame[3] == (uaFrame[1] ^ uaFrame[2]) &&
+        uaFrame[4] == FLAG)
+    {
+        printf("UA frame correctly received! Connection established.\n");
+    }
+    else
+    {
+        printf("Received frame is invalid!\n");
+    }
+
+    
     // Close serial port
     if (closeSerialPort() < 0)
     {
