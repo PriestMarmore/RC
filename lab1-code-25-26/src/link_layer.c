@@ -79,37 +79,3 @@ int llclose()
 
     return 0;
 }
-
-// =================================
-// Helper Functions
-// =================================
-
-// Calculates the Block Check Character 2 (BCC2) for the data payload
-unsigned char calculateBCC2(const unsigned char *data, int length){
-    unsigned char bcc2 = 0x00;
-    for (int i = 0; i < length; i++){
-        bcc2 ^= data[i];
-    }
-    return bcc2;
-}
-
-// Performs byte stuffing on the input buffer and writes to the output buffer.
-// Returns the size of the *stuffed* buffer.
-int stuff(const unsigned char *input, int input_len, unsigned char *output){
-    int output_len = 0;
-    for (int i = 0; i < input_len; i++){
-        if (input[i] == FLAG){
-            output[output_len++] = ESCAPE_BYTE;
-            output[output_len++] = FLAG ^ XOR_BYTE; // 0x7E -> 0x7D 0x5E
-        }
-        else if (input[i] == ESCAPE_BYTE){
-            output[output_len++] = ESCAPE_BYTE;
-            output[output_len++] = ESCAPE_BYTE ^ XOR_BYTE; // 0x7D -> 0x7D 0x5D
-        }
-        else{
-            output[output_len++] = input[i];
-        }
-    }
-    return output_len;
-}
-
