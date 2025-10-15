@@ -43,7 +43,7 @@
 #define XOR_BYTE 0x20
 
 // Global variables for connection state
-int fd = -1; // File descriptor for the serial port
+int fd1 = -1; // File descriptor for the serial port
 LinkLayer g_linkLayer; // Stores the connection parameters
 
 // Sequence number for I-frames (Transmitter Ns, Receiver Nr)
@@ -56,6 +56,22 @@ unsigned char g_Nr = 0; // Next sequence number EXPECTED (0 or 1)
 int llopen(LinkLayer connectionParameters)
 {
     // TODO: Implement this function
+
+    // Store parameters globally for potential later use if needed (M4)
+    g_linkLayer = connectionParameters;
+
+    // 1. OPEN AND CONFIGURE SERIAL PORT (CRITICAL STEP)
+    // We assume openSerialPort is defined in serial_port.h and returns the FD or -1 on failure.
+    fd1 = openSerialPort(g_linkLayer.serialPort, g_linkLayer.baudRate);
+    
+    if (fd1 < 0) {
+        // openSerialPort should print its own specific error via perror, 
+        // but we add a general fail message.
+        fprintf(stderr, "ERROR: llopen failed to open serial port %s.\n", g_linkLayer.serialPort);
+        return -1;
+    }
+    printf("Serial port %s opened successfully (fd=%d).\n", g_linkLayer.serialPort, fd1);
+
 
     if (connectionParameters.role == LlTx) {
     
@@ -80,12 +96,12 @@ int llopen(LinkLayer connectionParameters)
         
         // Since VMIN=0/VTIME=1 is set, read() won't block forever.
         printf("Tx: Waiting for response...\n");
-        bytes_read = read(fd, response, 50); // Read directly from file descriptor or use readBytesSerialPort
+        bytes_read = read(fd1, response, 50); // Read directly from file descriptor or use readBytesSerialPort
 
         if (bytes_read > 0) {
             response[bytes_read] = '\0';
             printf("Tx: Received M1 confirmation: %s\n", response);
-            return fd;
+            return fd1;
         } else {
             printf("Tx: Did not receive M1 confirmation.\n");
             return -1;
@@ -105,7 +121,7 @@ int llopen(LinkLayer connectionParameters)
         
         // For a simple M1 test, loop until data is received or you give up.
         while (bytes_read <= 0) {
-            bytes_read = read(fd, buffer, 50);
+            bytes_read = read(fd1, buffer, 50);
         }
         
         if (bytes_read > 0) {
@@ -117,7 +133,7 @@ int llopen(LinkLayer connectionParameters)
             printf("Rx: Sending M1 confirmation...\n");
             writeBytesSerialPort(confirmation, strlen((char*)confirmation));
             
-            return fd;
+            return fd1;
         } else {
             printf("Rx: Failed to read any bytes.\n");
             return -1;
