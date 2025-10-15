@@ -16,6 +16,9 @@ BAUD_RATE = 9600
 TX_FILE = penguin.gif
 RX_FILE = penguin-received.gif
 
+# Source files
+SRC_FILES = $(SRC)/*.c $(HELPER)/*.c
+
 # Main
 .PHONY: all
 all: main cable

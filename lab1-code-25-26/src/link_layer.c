@@ -3,6 +3,16 @@
 #include "link_layer.h"
 #include "serial_port.h"
 
+// Others
+#include <stdio.h>
+#include <string.h>
+#include <unistd.h>
+#include <stdlib.h>
+#include <fcntl.h>
+#include <termios.h>
+#include <signal.h>
+#include <errno.h>
+
 // MISC
 #define _POSIX_SOURCE 1 // POSIX compliant source
 
@@ -47,6 +57,73 @@ int llopen(LinkLayer connectionParameters)
 {
     // TODO: Implement this function
 
+    if (connectionParameters.role == LlTx) {
+    
+        // Test string to exchange (M1: "Exchange strings")
+        unsigned char test_string[] = "Hello Receiver!";
+        
+        printf("Tx: Sending test string to Rx...\n");
+        // Use the low-level serial port write function
+        int written = writeBytesSerialPort(test_string, strlen((char*)test_string));
+
+        if (written < 0) {
+            perror("writeBytesSerialPort failed");
+            return -1;
+        }
+        printf("Tx: Sent %d bytes.\n", written);
+        
+        // For M1, we don't need a timeout/retransmission loop yet, 
+        // just a simple attempt to read back confirmation.
+        
+        unsigned char response[50];
+        int bytes_read = 0;
+        
+        // Since VMIN=0/VTIME=1 is set, read() won't block forever.
+        printf("Tx: Waiting for response...\n");
+        bytes_read = read(fd, response, 50); // Read directly from file descriptor or use readBytesSerialPort
+
+        if (bytes_read > 0) {
+            response[bytes_read] = '\0';
+            printf("Tx: Received M1 confirmation: %s\n", response);
+            return fd;
+        } else {
+            printf("Tx: Did not receive M1 confirmation.\n");
+            return -1;
+        }
+    }
+
+    else if (connectionParameters.role == LlRx) {
+
+        unsigned char buffer[50];
+        int bytes_read = 0;
+
+        printf("Rx: Waiting for test string from Tx...\n");
+        
+        // Read directly from file descriptor or use readBytesSerialPort.
+        // The VMIN/VTIME setting means this read will eventually time out 
+        // if Tx hasn't sent anything. You may need to loop here for a robust test.
+        
+        // For a simple M1 test, loop until data is received or you give up.
+        while (bytes_read <= 0) {
+            bytes_read = read(fd, buffer, 50);
+        }
+        
+        if (bytes_read > 0) {
+            buffer[bytes_read] = '\0';
+            printf("Rx: Received test string: %s\n", buffer);
+            
+            // Send a confirmation back (Exchange strings)
+            unsigned char confirmation[] = "Rx ACK M1";
+            printf("Rx: Sending M1 confirmation...\n");
+            writeBytesSerialPort(confirmation, strlen((char*)confirmation));
+            
+            return fd;
+        } else {
+            printf("Rx: Failed to read any bytes.\n");
+            return -1;
+        }
+    }
+    
     return 0;
 }
 
@@ -57,8 +134,8 @@ int llwrite(const unsigned char *buf, int bufSize)
 {
     // TODO: Implement this function
 
-    return 0;
-}
+        return 0;
+    }
 
 ////////////////////////////////////////////////
 // LLREAD
