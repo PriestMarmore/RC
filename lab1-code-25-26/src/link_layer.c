@@ -27,17 +27,17 @@
 
 // Control field values for I-frames (Ns=0 or Ns=1)
 #define C_I_0 0x00
-#define C_I_1 0x80 // RESTORED TEMPLATE VALUE
+#define C_I_1 0x80 
 
 // Control field values for RR/REJ frames (Nr=0 or Nr=1)
 // RR0: ready to receive I(0), Acknowledges I(1)
-#define C_RR_0 0xAA // RESTORED TEMPLATE VALUE
+#define C_RR_0 0xAA 
 // RR1: ready to receive I(1), Acknowledges I(0)
-#define C_RR_1 0xAB // RESTORED TEMPLATE VALUE
+#define C_RR_1 0xAB 
 // REJ0: rejects I(0)
-#define C_REJ_0 0x54 // RESTORED TEMPLATE VALUE
+#define C_REJ_0 0x54 
 // REJ1: rejects I(1)
-#define C_REJ_1 0x55 // RESTORED TEMPLATE VALUE
+#define C_REJ_1 0x55 
 
 // Stuffing constants
 #define ESCAPE_BYTE 0x7D
@@ -53,14 +53,13 @@ unsigned char g_Nr = 0; // Next sequence number EXPECTED (0 or 1)
 
 // External functions defined in alarm_sigaction.c
 extern void setupAlarmHandler();
-// Declaration now matches alarm_sigaction.c and link_layer.h (uses int)
 extern void enableAlarm(int timeout, int maxRetransmissions); 
 extern void disableAlarm();
 extern int isAlarmSet();
 extern void clearAlarm();
 extern int getRetransmissionCount();
 
-// Helper functions
+// Helper functions for M2/M4
 void create_su_frame(unsigned char *frame, unsigned char A, unsigned char C) {
     frame[0] = FLAG;
     frame[1] = A;
@@ -84,13 +83,10 @@ int read_su_frame(int fd, unsigned char *buffer) {
 
     // Loop until a full frame is received or read() times out (if VTIME > 0)
     while (state != STOP) {
-        // Read one byte. Read will be interrupted by SIGALARM or timeout.
         int res = read(fd, &byte, 1);
         
         if (res <= 0) {
-            // Check for interruption by signal (SIGALARM)
             if (errno == EINTR) return 0;
-            // Timeout or error (res == 0 or res == -1)
             return 0;
         }
 
@@ -117,7 +113,8 @@ int read_su_frame(int fd, unsigned char *buffer) {
                     state = FLAG_RCV;
                     bytes_received = 1;
                 } 
-                else if (byte == C_SET || byte == C_UA || byte == C_DISC) { 
+                // Check for C_SET, C_UA, C_DISC, or RR/REJ
+                else if (byte == C_SET || byte == C_UA || byte == C_DISC || byte == C_RR_0 || byte == C_RR_1 || byte == C_REJ_0 || byte == C_REJ_1) { 
                     state = C_RCV;
                     buffer[bytes_received++] = byte;
                 } else {
@@ -166,6 +163,56 @@ int read_su_frame(int fd, unsigned char *buffer) {
 }
 
 
+// Helper functions for M3
+unsigned char calculate_bcc2(const unsigned char *buffer, int bufferSize) {
+    unsigned char bcc2 = 0x00;
+    for (int i = 0; i < bufferSize; i++) {
+        bcc2 ^= buffer[i];
+    }
+    return bcc2;
+}
+
+int byte_stuffing(const unsigned char *data, int dataSize, unsigned char *stuffedFrame) {
+    int stuffedSize = 0;
+    for (int i = 0; i < dataSize; i++) {
+        if (data[i] == FLAG || data[i] == ESCAPE_BYTE) {
+            stuffedFrame[stuffedSize++] = ESCAPE_BYTE;
+            stuffedFrame[stuffedSize++] = data[i] ^ XOR_BYTE;
+        } else {
+            stuffedFrame[stuffedSize++] = data[i];
+        }
+    }
+    return stuffedSize;
+}
+
+/**
+ * @brief Performs byte de-stuffing on a buffer.
+ * @param stuffedData The input buffer containing stuffed data.
+ * @param stuffedSize The size of the stuffed input buffer.
+ * @param destuffedData The output buffer to receive the de-stuffed bytes.
+ * @return The number of de-stuffed bytes written to destuffedData.
+ */
+int byte_destuffing(const unsigned char *stuffedData, int stuffedSize, unsigned char *destuffedData) {
+    int destuffedSize = 0;
+    for (int i = 0; i < stuffedSize; i++) {
+        if (stuffedData[i] == ESCAPE_BYTE) {
+            // Check for potential buffer overflow before reading next byte
+            if (i + 1 < stuffedSize) {
+                destuffedData[destuffedSize++] = stuffedData[i+1] ^ XOR_BYTE;
+                i++; // Skip the next byte as it was part of the stuffed sequence
+            } else {
+                // This indicates an incomplete stuffed sequence (ends with ESCAPE) - error
+                fprintf(stderr, "Error: Incomplete stuffed sequence in frame.\n");
+                return -1; 
+            }
+        } else {
+            destuffedData[destuffedSize++] = stuffedData[i];
+        }
+    }
+    return destuffedSize;
+}
+
+
 ////////////////////////////////////////////////
 // LLOPEN (M2 & M4 Implementation)
 ////////////////////////////////////////////////
@@ -210,7 +257,6 @@ int llopen(LinkLayer connectionParameters)
             }
             
             // 2. Enable Timer
-            // Note: The signature for enableAlarm is (int timeoutSec, int maxTries)
             enableAlarm(g_linkLayer.timeout, g_linkLayer.nRetransmissions);
 
             // 3. Wait for UA response
@@ -224,6 +270,7 @@ int llopen(LinkLayer connectionParameters)
                     if (response_frame[1] == A_TX && response_frame[2] == C_UA) {
                         printf("Tx: Received valid UA frame. Connection established.\n");
                         disableAlarm();
+                        clearAlarm(); // Clear the flag
                         return fd1; // Success!
                     } else {
                         // Received a frame, but it's not the expected UA. Ignore and keep waiting.
@@ -231,15 +278,11 @@ int llopen(LinkLayer connectionParameters)
                                 response_frame[1], response_frame[2]);
                     }
                 } 
-                // If bytes_read is 0 (read() timed out but alarm hasn't fired yet), continue waiting.
             }
             
-            // If we exit the inner loop, it means isAlarmSet() is true (timeout).
+            // Timeout occurred
             disableAlarm();
-            clearAlarm(); // Reset flag for the next retransmission attempt
-            
-            // The outer loop will increment the retransmission count implicitly in alarmHandler
-            // and check it against nRetransmissions.
+            clearAlarm(); 
         }
 
         // If loop completes without returning, max retransmissions reached
@@ -289,7 +332,7 @@ int llopen(LinkLayer connectionParameters)
         }
     }
     
-    return -1; // Should not be reached if one of the roles is executed
+    return -1; 
 }
 
 ////////////////////////////////////////////////
@@ -297,9 +340,103 @@ int llopen(LinkLayer connectionParameters)
 ////////////////////////////////////////////////
 int llwrite(const unsigned char *buf, int bufSize)
 {
-    // TODO: Implement this function
+    // Max frame size: 5 (F,A,C,BCC1,F) + 2*(bufSize + 1 for BCC2)
+    unsigned char stuffed_data[2 * bufSize + 1]; 
+    unsigned char frame[2 * bufSize + 10]; 
 
-    return 0;
+    // Data for stuffing: payload + BCC2
+    unsigned char *data_and_bcc2 = (unsigned char *)malloc(bufSize + 1);
+    if (data_and_bcc2 == NULL) {
+        perror("llwrite: malloc failed");
+        return -1;
+    }
+    
+    // Calculate BCC2 and prepare the data for stuffing
+    unsigned char bcc2 = calculate_bcc2(buf, bufSize);
+    memcpy(data_and_bcc2, buf, bufSize);
+    data_and_bcc2[bufSize] = bcc2; 
+
+    // Start retransmission loop for the I-frame
+    while (getRetransmissionCount() < g_linkLayer.nRetransmissions) {
+        
+        // --- 1. Frame Construction (done on every transmission/retransmission) ---
+        
+        // Reset and perform stuffing
+        int stuffedSize = byte_stuffing(data_and_bcc2, bufSize + 1, stuffed_data);
+
+        // Build the I-Frame
+        frame[0] = FLAG;
+        frame[1] = A_TX; 
+        frame[2] = (g_Ns == 0) ? C_I_0 : C_I_1; // Control field based on current Ns
+        frame[3] = frame[1] ^ frame[2];         // BCC1: A XOR C
+        
+        memcpy(&frame[4], stuffed_data, stuffedSize); 
+        frame[4 + stuffedSize] = FLAG; 
+        
+        int frameSize = 5 + stuffedSize;
+        
+        // --- 2. Send Frame ---
+        printf("Tx: Sending I-frame (Ns=%d, dataSize=%d, frameSize=%d)\n", g_Ns, bufSize, frameSize);
+        int written = writeBytesSerialPort(frame, frameSize);
+
+        if (written != frameSize) {
+            perror("llwrite: Failed to write complete frame");
+            free(data_and_bcc2);
+            return -1;
+        }
+
+        // --- 3. Enable Timer and Wait for ACK (RR/REJ) ---
+        enableAlarm(g_linkLayer.timeout, g_linkLayer.nRetransmissions);
+        
+        printf("Tx: Waiting for RR/REJ response...\n");
+        unsigned char response_frame[SU_FRAME_SIZE];
+        int bytes_read = 0;
+        
+        while (!isAlarmSet()) {
+            bytes_read = read_su_frame(fd1, response_frame);
+
+            if (bytes_read == SU_FRAME_SIZE) {
+                unsigned char C_field = response_frame[2];
+                // Expected Nr is the opposite of the current Ns
+                unsigned char expected_Nr = 1 - g_Ns; 
+                
+                // Check for RR(Nr) (Acknowledgment)
+                if (C_field == ((expected_Nr == 0) ? C_RR_0 : C_RR_1)) {
+                    printf("Tx: Received RR(%d). Frame acknowledged.\n", expected_Nr);
+                    disableAlarm();
+                    clearAlarm();
+                    g_Ns = expected_Nr; // Toggle Ns for the next transmission
+                    free(data_and_bcc2);
+                    return bufSize; // SUCCESS
+                }
+                
+                // Check for REJ(Ns) (Negative Acknowledgment - Request Retransmission)
+                else if (C_field == ((g_Ns == 0) ? C_REJ_0 : C_REJ_1)) {
+                    printf("Tx: Received REJ(%d). Retransmitting frame.\n", g_Ns);
+                    disableAlarm();
+                    clearAlarm();
+                    // Loop continues (retransmission)
+                    break; 
+                }
+                
+                // Ignore other control frames (e.g., DISC, unexpected RR/REJ)
+            }
+        }
+        
+        // If we exit the inner loop due to isAlarmSet() (timeout)
+        if (isAlarmSet()) {
+            printf("Tx: Timeout occurred. Retransmitting frame (Attempt %d/%d).\n", 
+                   getRetransmissionCount(), g_linkLayer.nRetransmissions);
+            disableAlarm();
+            clearAlarm();
+            // Loop continues (retransmission)
+        }
+    }
+
+    // If loop completes without success
+    printf("Tx: Failed to send frame after %d attempts (Max Retransmissions Reached).\n", g_linkLayer.nRetransmissions);
+    free(data_and_bcc2);
+    return -1; 
 }
 
 ////////////////////////////////////////////////
@@ -307,9 +444,204 @@ int llwrite(const unsigned char *buf, int bufSize)
 ////////////////////////////////////////////////
 int llread(unsigned char *packet)
 {
-    // TODO: Implement this function
+    // The maximum possible destuffed size is limited by the packet buffer size
+    // We assume the caller provides a buffer large enough for the maximum application layer packet
+    // Assuming max frame size of 2 * 2000 (app layer packet max size) for safety
+    unsigned char frame_buf[4096];
+    unsigned char destuffed_payload_and_bcc2[4096];
 
-    return 0;
+    // State machine for reading the I-frame
+    enum State {
+        START,
+        FLAG_RCV,
+        A_RCV,
+        C_RCV,
+        BCC1_RCV,
+        DATA_RCV,
+        STOP
+    } state = START;
+
+    unsigned char byte;
+    int frame_idx = 0;
+    int data_start_idx = -1; // Index where the stuffed data/BCC2 starts
+
+    printf("Rx: Waiting for I-frame (Ns=%d expected)...\n", g_Nr);
+
+    while (state != STOP) {
+        int res = read(fd1, &byte, 1);
+        
+        if (res <= 0) {
+            // Error or Timeout: check if we were already in the middle of a frame.
+            if (state != START) {
+                 fprintf(stderr, "Rx: Timeout or Error while receiving frame in state %d. Restarting.\n", state);
+            }
+            // Reset to START and continue waiting
+            state = START; 
+            frame_idx = 0;
+            data_start_idx = -1;
+            
+            // If the timeout was a read() timeout, return 0 to application layer
+            if (errno == EINTR || res == 0) return 0;
+            
+            continue;
+        }
+
+        switch (state) {
+            case START:
+                if (byte == FLAG) {
+                    state = FLAG_RCV;
+                    frame_buf[frame_idx++] = byte;
+                }
+                break;
+            case FLAG_RCV:
+                if (byte == FLAG) {
+                    frame_idx = 1; 
+                } else if (byte == A_TX) {
+                    state = A_RCV;
+                    frame_buf[frame_idx++] = byte;
+                } else {
+                    state = START;
+                    frame_idx = 0;
+                }
+                break;
+            case A_RCV:
+                if (byte == FLAG) {
+                    state = FLAG_RCV;
+                    frame_idx = 1;
+                }
+                // Check if C is C_I_0 (Ns=0) or C_I_1 (Ns=1)
+                else if (byte == C_I_0 || byte == C_I_1) { 
+                    state = C_RCV;
+                    frame_buf[frame_idx++] = byte;
+                } else {
+                    // Ignore other control frames (RR, REJ, DISC, etc.) and restart
+                    state = START;
+                    frame_idx = 0;
+                }
+                break;
+            case C_RCV:
+                if (byte == FLAG) {
+                    state = FLAG_RCV;
+                    frame_idx = 1;
+                }
+                // Check BCC1: A XOR C
+                else if (byte == (frame_buf[1] ^ frame_buf[2])) { 
+                    frame_buf[frame_idx++] = byte;
+                    data_start_idx = frame_idx; // Stuffed data starts here
+                    state = DATA_RCV;
+                } else {
+                    // BCC1 error: Send REJ for the expected sequence number (g_Nr) and restart
+                    fprintf(stderr, "Rx: BCC1 Error (0x%02x ^ 0x%02x != 0x%02x). Sending REJ(%d).\n", 
+                            frame_buf[1], frame_buf[2], byte, g_Nr);
+                    unsigned char rej_c = (g_Nr == 0) ? C_REJ_0 : C_REJ_1;
+                    unsigned char rej_frame[SU_FRAME_SIZE];
+                    create_su_frame(rej_frame, A_TX, rej_c);
+                    writeBytesSerialPort(rej_frame, SU_FRAME_SIZE);
+                    
+                    state = START;
+                    frame_idx = 0;
+                }
+                break;
+            case DATA_RCV:
+                if (byte == FLAG) {
+                    frame_buf[frame_idx++] = byte;
+                    state = STOP; // Found end flag!
+                } else {
+                    frame_buf[frame_idx++] = byte;
+                    // Check for buffer overflow
+                    if (frame_idx >= 4096) {
+                        fprintf(stderr, "Rx: Frame buffer overflow. Restarting.\n");
+                        state = START;
+                        frame_idx = 0;
+                    }
+                }
+                break;
+            case BCC1_RCV: // Not reachable now, but keeps the enum clean
+            case STOP:
+                break;
+        }
+    }
+
+    // --- Frame validation and processing ---
+
+    // 1. Get the control field Ns
+    unsigned char received_Ns = (frame_buf[2] == C_I_1) ? 1 : 0;
+    
+    printf("Rx: Received I-frame (Ns=%d, Nr=%d expected).\n", received_Ns, g_Nr);
+
+    // 2. Check Sequence Number (Ns must match Nr)
+    if (received_Ns != g_Nr) {
+        // Duplicate frame (Ns is the opposite of the current expected Nr, meaning we already received it)
+        if (received_Ns == (1 - g_Nr)) {
+            printf("Rx: Duplicate frame (Ns=%d). Sending RR(%d) for re-acknowledgement and discarding frame.\n", received_Ns, g_Nr);
+            // Send RR(Nr) to acknowledge the frame with the sequence number we *do* expect next (the current g_Nr)
+            unsigned char rr_c = (g_Nr == 0) ? C_RR_0 : C_RR_1;
+            unsigned char rr_frame[SU_FRAME_SIZE];
+            create_su_frame(rr_frame, A_TX, rr_c);
+            writeBytesSerialPort(rr_frame, SU_FRAME_SIZE);
+            return 0; // Discarded
+        } else {
+            // Unexpected Ns (Shouldn't happen in standard go-back-N, but safer to reject)
+            fprintf(stderr, "Rx: Unexpected Ns (%d). Sending REJ(%d).\n", received_Ns, g_Nr);
+            unsigned char rej_c = (g_Nr == 0) ? C_REJ_0 : C_REJ_1;
+            unsigned char rej_frame[SU_FRAME_SIZE];
+            create_su_frame(rej_frame, A_TX, rej_c);
+            writeBytesSerialPort(rej_frame, SU_FRAME_SIZE);
+            return -1;
+        }
+    }
+    
+    // 3. De-stuffing: Process only the stuffed data/BCC2 section
+    int stuffed_data_size = frame_idx - 5; // Frame size - (F, A, C, BCC1, F)
+    int destuffed_size = byte_destuffing(&frame_buf[data_start_idx], stuffed_data_size, destuffed_payload_and_bcc2);
+
+    if (destuffed_size < 1) { // Error or just BCC2 received
+        fprintf(stderr, "Rx: De-stuffing failed or payload too short.\n");
+        // Frame received but corrupted internally. Send REJ.
+        unsigned char rej_c = (g_Nr == 0) ? C_REJ_0 : C_REJ_1;
+        unsigned char rej_frame[SU_FRAME_SIZE];
+        create_su_frame(rej_frame, A_TX, rej_c);
+        writeBytesSerialPort(rej_frame, SU_FRAME_SIZE);
+        return -1;
+    }
+    
+    // The last byte is the received BCC2
+    int data_size = destuffed_size - 1; 
+    unsigned char received_bcc2 = destuffed_payload_and_bcc2[data_size];
+
+    // 4. Calculate BCC2 on the received data payload
+    unsigned char calculated_bcc2 = calculate_bcc2(destuffed_payload_and_bcc2, data_size);
+
+    // 5. Check BCC2
+    if (calculated_bcc2 != received_bcc2) {
+        // BCC2 Error: Send REJ for the current sequence number (g_Nr)
+        fprintf(stderr, "Rx: BCC2 Checksum Error (Got 0x%02x, Expected 0x%02x). Sending REJ(%d).\n", 
+                received_bcc2, calculated_bcc2, g_Nr);
+        unsigned char rej_c = (g_Nr == 0) ? C_REJ_0 : C_REJ_1;
+        unsigned char rej_frame[SU_FRAME_SIZE];
+        create_su_frame(rej_frame, A_TX, rej_c);
+        writeBytesSerialPort(rej_frame, SU_FRAME_SIZE);
+        return -1;
+    }
+
+    // --- SUCCESS: Valid frame received, acknowledged, and data ready ---
+
+    printf("Rx: Frame valid! BCC1/BCC2 OK. Data size: %d. Sending RR(%d) acknowledgement.\n", data_size, 1 - g_Nr);
+
+    // 6. Send RR(Nr+1) Acknowledgment
+    unsigned char next_Nr = 1 - g_Nr;
+    unsigned char rr_c = (next_Nr == 0) ? C_RR_0 : C_RR_1; // RR0 if we expect I(0) next, RR1 if we expect I(1) next
+    unsigned char rr_frame[SU_FRAME_SIZE];
+    create_su_frame(rr_frame, A_TX, rr_c);
+    writeBytesSerialPort(rr_frame, SU_FRAME_SIZE);
+
+    // 7. Update next expected sequence number (Nr)
+    g_Nr = next_Nr;
+
+    // 8. Copy payload to the output packet buffer
+    memcpy(packet, destuffed_payload_and_bcc2, data_size);
+    
+    return data_size; // Return the number of data bytes delivered
 }
 
 ////////////////////////////////////////////////
@@ -321,6 +653,7 @@ int llclose()
     if (fd1 != -1) {
         // disable any active alarm just in case
         disableAlarm(); 
+        clearAlarm();
         int res = close(fd1); 
         fd1 = -1;
         printf("Serial port closed.\n");
