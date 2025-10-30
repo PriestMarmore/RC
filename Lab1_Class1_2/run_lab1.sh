@@ -7,6 +7,8 @@ CABLE_DIR="$PROJECT_DIR/cable"
 
 # Open Terminal 1: cable.c
 gnome-terminal -- bash -c "
+gcc -o bin/transmitter src/write_noncanonical.c
+gcc -o bin/receiver src/read_noncanonical.c
 cd $CABLE_DIR;
 gcc -Wall cable.c -o cable;
 sudo ./cable;
@@ -28,6 +30,4 @@ exec bash"
 
 # Open Terminal 3: sender simulation
 gnome-terminal -- bash -c "
-echo -ne '\x01\x02\x03\x04\x05' > $RX_PORT;
-echo 'Sent test bytes to $RX_PORT';
 exec bash"

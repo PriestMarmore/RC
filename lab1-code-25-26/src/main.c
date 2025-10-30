@@ -6,6 +6,7 @@
 #include <string.h>
 
 #include "application_layer.h"
+#include "link_layer.h"
 
 #define N_TRIES 3
 #define TIMEOUT 4
@@ -69,5 +70,40 @@ int main(int argc, char *argv[])
 
     applicationLayer(serialPort, role, baudrate, N_TRIES, TIMEOUT, filename);
 
+
+
+/*// ===================================================
+// Testing llopen function
+// ===================================================
+    // 1. Define the LinkLayer struct
+    LinkLayer connectionParameters;
+
+    // 2. Populate the fields
+    strncpy(connectionParameters.serialPort, serialPort, 50); // Copy serialPort string
+    connectionParameters.baudRate = baudrate;
+    connectionParameters.timeout = TIMEOUT;
+    connectionParameters.nRetransmissions = N_TRIES;
+
+    // Determine role based on string comparison
+    if (strcmp("tx", role) == 0) {
+        connectionParameters.role = LlTx;
+    } else {
+        connectionParameters.role = LlRx;
+    }
+
+    // 3. Call llopen with the populated struct
+    //applicationLayer(serialPort, role, baudrate, N_TRIES, TIMEOUT, filename);
+   // //int fd = llopen(connectionParameters); // Capture the file descriptor
+
+    if (fd < 0) {
+        fprintf(stderr, "ERROR: llopen failed to establish connection.\n");
+        return 1;
+    } else {
+        printf("Connection successfully established (fd=%d).\n", fd);
+    }
+
     return 0;
+    // //llopen(connectionParameters);
+
+    return 0; */
 }
