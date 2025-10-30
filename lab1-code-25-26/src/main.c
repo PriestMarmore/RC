@@ -72,7 +72,7 @@ int main(int argc, char *argv[])
 
 
 
-// ===================================================
+/*// ===================================================
 // Testing llopen function
 // ===================================================
     // 1. Define the LinkLayer struct
@@ -93,7 +93,7 @@ int main(int argc, char *argv[])
 
     // 3. Call llopen with the populated struct
     //applicationLayer(serialPort, role, baudrate, N_TRIES, TIMEOUT, filename);
-    int fd = llopen(connectionParameters); // Capture the file descriptor
+   // //int fd = llopen(connectionParameters); // Capture the file descriptor
 
     if (fd < 0) {
         fprintf(stderr, "ERROR: llopen failed to establish connection.\n");
@@ -103,7 +103,7 @@ int main(int argc, char *argv[])
     }
 
     return 0;
-    llopen(connectionParameters);
+    // //llopen(connectionParameters);
 
-    return 0;
+    return 0; */
 }

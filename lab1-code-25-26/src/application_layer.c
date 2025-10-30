@@ -9,6 +9,11 @@
 #include <sys/stat.h>
 #include <fcntl.h>
 
+#ifndef MAX_PACKET_SIZE
+#define MAX_PACKET_SIZE (MAX_PAYLOAD_SIZE + 4) // C, N, L2, L1 + dados
+#endif
+
+
 // Max size of the data field (payload) inside a data packet (Control, Sequence, L1, L2 + Data)
 // We assume this is a standard chunk size for the data reading buffer.
 #define MAX_DATA_PAYLOAD_SIZE 1024
@@ -105,34 +110,45 @@ int llread_application(const char *filename_rx);
 // APPLICATION LAYER ENTRY POINT (FIX FOR LINKER ERROR)
 // -----------------------------------------------------------------------------
 
-int applicationLayer(const char *serialPort, int baudRate, int role, const char *filename) {
-    
+void applicationLayer(const char *serialPort, const char *role, int baudRate,
+                      int nTries, int timeout, const char *filename) {
+    // Preparar parâmetros para a camada de enlace
     LinkLayer connectionParameters;
+    memset(&connectionParameters, 0, sizeof(connectionParameters));
     strncpy(connectionParameters.serialPort, serialPort, sizeof(connectionParameters.serialPort) - 1);
     connectionParameters.baudRate = baudRate;
-    connectionParameters.role = role;
-    connectionParameters.nRetransmissions = 3; // Default value, adjust if needed
-    connectionParameters.timeout = 4; // Default value, adjust if needed
+    connectionParameters.nRetransmissions = nTries;
+    connectionParameters.timeout = timeout;
+    connectionParameters.role = (strcmp(role, "tx") == 0) ? LlTx : LlRx;
 
+    // Estabelecer ligação de enlace
     int fd = llopen(connectionParameters);
     if (fd < 0) {
         printf("Application: Error establishing link layer connection.\n");
-        return -1;
+        return;
     }
 
     int result = -1;
-    if (role == TRANSMITTER) {
+
+    if (strcmp(role, "tx") == 0) {
+        // TRANSMITTER
         result = llwrite_application(filename);
-    } else if (role == RECEIVER) {
-        result = llread_application(filename); // Pass default filename for Rx
+    } else {
+        // RECEIVER
+        result = llread_application(filename);
     }
 
-    if (llclose(fd) < 0) {
+    // Fechar ligação (o teu llclose() não recebe fd)
+    if (llclose() < 0) {
         printf("Application: Error closing link layer connection.\n");
-        return -1;
+        return;
     }
-    
-    return result;
+
+    if (result < 0) {
+        printf("Application: Transfer failed.\n");
+    } else {
+        printf("Application: Transfer completed successfully.\n");
+    }
 }
 
 
@@ -220,8 +236,12 @@ int llwrite_application(const char *filename) {
         return -1;
     }
 
+    sequence_number = (sequence_number + 1) & 0xFF;
+
     printf("AppTx: File transfer complete. Total bytes sent: %d.\n", total_data_sent);
-    return 0;
+    return total_data_sent;
+
+    //return 0;
 }
 
 
