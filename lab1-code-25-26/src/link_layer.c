@@ -236,6 +236,7 @@ int llopen(LinkLayer connectionParameters)
         // Setup the alarm signal handler
         setupAlarmHandler();
         
+        const int maxAttempts = g_linkLayer.nRetransmissions;
         unsigned char set_frame[SU_FRAME_SIZE];
         unsigned char response_frame[SU_FRAME_SIZE];
         int bytes_read = 0;
@@ -244,49 +245,49 @@ int llopen(LinkLayer connectionParameters)
         create_su_frame(set_frame, A_TX, C_SET);
 
         // Start the retransmission loop
-        while (getRetransmissionCount() < g_linkLayer.nRetransmissions) {
-            
-            // 1. Send SET frame
-            printf("Tx: Sending SET frame...\n");
-            int written = writeBytesSerialPort(set_frame, SU_FRAME_SIZE);
+        // Usa um contador explícito de tentativas
+        for (int attempt = 1; attempt <= maxAttempts; ++attempt) {
 
+            // 1. Envia SET
+            printf("Tx: Sending SET frame... (attempt %d/%d)\n",
+            attempt, maxAttempts);
+            int written = writeBytesSerialPort(set_frame, SU_FRAME_SIZE);
             if (written < 0) {
                 perror("Tx: writeBytesSerialPort failed");
                 llclose();
                 return -1;
             }
-            
-            // 2. Enable Timer
-            enableAlarm(g_linkLayer.timeout, g_linkLayer.nRetransmissions);
 
-            // 3. Wait for UA response
+            // 2. Armamos o temporizador
+            enableAlarm(g_linkLayer.timeout,maxAttempts);
+
+            // 3. Espera por UA até timeout
             printf("Tx: Waiting for UA response...\n");
-            
             while (!isAlarmSet()) {
                 bytes_read = read_su_frame(fd1, response_frame);
-
                 if (bytes_read == SU_FRAME_SIZE) {
-                    // Check if the received frame is a valid UA (A=0x03, C=0x07)
                     if (response_frame[1] == A_TX && response_frame[2] == C_UA) {
                         printf("Tx: Received valid UA frame. Connection established.\n");
                         disableAlarm();
-                        clearAlarm(); // Clear the flag
-                        return fd1; // Success!
-                    } else {
-                        // Received a frame, but it's not the expected UA. Ignore and keep waiting.
-                        printf("Tx: Received frame, but not UA (A=0x%02x, C=0x%02x). Ignoring.\n", 
-                                response_frame[1], response_frame[2]);
+                        clearAlarm();
+                        return fd1; // sucesso
                     }
-                } 
+                    else {
+                        printf("Tx: Received frame, but not UA (A=0x%02x, C=0x%02x). Ignoring.\n",
+                            response_frame[1], response_frame[2]);
+                    }
+                }
             }
-            
-            // Timeout occurred
+
+            // Timeout desta tentativa
             disableAlarm();
-            clearAlarm(); 
+            clearAlarm();
+            printf("Tx: Timeout. Will retry if attempts left.\n");
         }
 
-        // If loop completes without returning, max retransmissions reached
-        printf("Tx: Failed to establish connection after %d attempts\n", g_linkLayer.nRetransmissions);
+        // Esgotou as tentativas
+        printf("Tx: Failed to establish connection after %d attempts\n",
+            maxAttempts);
         llclose();
         return -1;
     }
@@ -338,8 +339,7 @@ int llopen(LinkLayer connectionParameters)
 ////////////////////////////////////////////////
 // LLWRITE
 ////////////////////////////////////////////////
-int llwrite(const unsigned char *buf, int bufSize)
-{
+int llwrite(const unsigned char *buf, int bufSize){
     // Max frame size: 5 (F,A,C,BCC1,F) + 2*(bufSize + 1 for BCC2)
     unsigned char stuffed_data[2 * bufSize + 1]; 
     unsigned char frame[2 * bufSize + 10]; 
@@ -355,88 +355,83 @@ int llwrite(const unsigned char *buf, int bufSize)
     unsigned char bcc2 = calculate_bcc2(buf, bufSize);
     memcpy(data_and_bcc2, buf, bufSize);
     data_and_bcc2[bufSize] = bcc2; 
+    const int maxAttempts = g_linkLayer.nRetransmissions;
+
 
     // Start retransmission loop for the I-frame
-    while (getRetransmissionCount() < g_linkLayer.nRetransmissions) {
-        
-        // --- 1. Frame Construction (done on every transmission/retransmission) ---
-        
-        // Reset and perform stuffing
-        int stuffedSize = byte_stuffing(data_and_bcc2, bufSize + 1, stuffed_data);
+    // Retransmissões com contador explícito (termina após N tentativas)
+        for (int attempt = 1; attempt <= g_linkLayer.nRetransmissions; ++attempt) {
+            // --- 1) Construção da trama I (a cada tentativa) ---
+            int stuffedSize = byte_stuffing(data_and_bcc2, bufSize + 1, stuffed_data);
 
-        // Build the I-Frame
-        frame[0] = FLAG;
-        frame[1] = A_TX; 
-        frame[2] = (g_Ns == 0) ? C_I_0 : C_I_1; // Control field based on current Ns
-        frame[3] = frame[1] ^ frame[2];         // BCC1: A XOR C
-        
-        memcpy(&frame[4], stuffed_data, stuffedSize); 
-        frame[4 + stuffedSize] = FLAG; 
-        
-        int frameSize = 5 + stuffedSize;
-        
-        // --- 2. Send Frame ---
-        printf("Tx: Sending I-frame (Ns=%d, dataSize=%d, frameSize=%d)\n", g_Ns, bufSize, frameSize);
-        int written = writeBytesSerialPort(frame, frameSize);
+            frame[0] = FLAG;
+            frame[1] = A_TX;
+            frame[2] = (g_Ns == 0) ? C_I_0 : C_I_1;
+            frame[3] = frame[1] ^ frame[2];
+            memcpy(&frame[4], stuffed_data, stuffedSize);
+            frame[4 + stuffedSize] = FLAG;
+            int frameSize = 5 + stuffedSize;
 
-        if (written != frameSize) {
-            perror("llwrite: Failed to write complete frame");
-            free(data_and_bcc2);
-            return -1;
-        }
+            // --- 2) Envio ---
+            printf("Tx: Sending I-frame (Ns=%d, dataSize=%d, frameSize=%d) [attempt %d/%d]\n",
+                g_Ns, bufSize, frameSize, attempt, maxAttempts);
 
-        // --- 3. Enable Timer and Wait for ACK (RR/REJ) ---
-        enableAlarm(g_linkLayer.timeout, g_linkLayer.nRetransmissions);
-        
-        printf("Tx: Waiting for RR/REJ response...\n");
-        unsigned char response_frame[SU_FRAME_SIZE];
-        int bytes_read = 0;
-        
-        while (!isAlarmSet()) {
-            bytes_read = read_su_frame(fd1, response_frame);
+            int written = writeBytesSerialPort(frame, frameSize);
+            if (written != frameSize) {
+                perror("llwrite: Failed to write complete frame");
+                free(data_and_bcc2);
+                return -1;
+            }
 
-            if (bytes_read == SU_FRAME_SIZE) {
-                unsigned char C_field = response_frame[2];
-                // Expected Nr is the opposite of the current Ns
-                unsigned char expected_Nr = 1 - g_Ns; 
-                
-                // Check for RR(Nr) (Acknowledgment)
-                if (C_field == ((expected_Nr == 0) ? C_RR_0 : C_RR_1)) {
-                    printf("Tx: Received RR(%d). Frame acknowledged.\n", expected_Nr);
-                    disableAlarm();
-                    clearAlarm();
-                    g_Ns = expected_Nr; // Toggle Ns for the next transmission
-                    free(data_and_bcc2);
-                    return bufSize; // SUCCESS
+            // --- 3) Espera por RR/REJ com timeout ---
+            enableAlarm(g_linkLayer.timeout, maxAttempts);
+            printf("Tx: Waiting for RR/REJ response...\n");
+
+            unsigned char response_frame[SU_FRAME_SIZE];
+            int bytes_read = 0;
+
+            while (!isAlarmSet()) {
+                bytes_read = read_su_frame(fd1, response_frame);
+                if (bytes_read == SU_FRAME_SIZE) {
+                    unsigned char C_field = response_frame[2];
+                    unsigned char expected_Nr = 1 - g_Ns;
+
+                    // RR esperado?
+                    if (C_field == ((expected_Nr == 0) ? C_RR_0 : C_RR_1)) {
+                        printf("Tx: Received RR(%d). Frame acknowledged.\n", expected_Nr);
+                        disableAlarm();
+                        clearAlarm();
+                        g_Ns = expected_Nr;      // alterna Ns
+                        free(data_and_bcc2);
+                        return bufSize;          // sucesso
+                    }
+                    // REJ do Ns atual?
+                    if (C_field == ((g_Ns == 0) ? C_REJ_0 : C_REJ_1)) {
+                        printf("Tx: Received REJ(%d). Retransmitting frame.\n", g_Ns);
+                        disableAlarm();
+                        clearAlarm();
+                        // Sai do while e volta ao for (nova tentativa)
+                        break;
+                    }
+
+                    // Outros controlos: ignora e continua à espera até timeout
                 }
-                
-                // Check for REJ(Ns) (Negative Acknowledgment - Request Retransmission)
-                else if (C_field == ((g_Ns == 0) ? C_REJ_0 : C_REJ_1)) {
-                    printf("Tx: Received REJ(%d). Retransmitting frame.\n", g_Ns);
-                    disableAlarm();
-                    clearAlarm();
-                    // Loop continues (retransmission)
-                    break; 
-                }
-                
-                // Ignore other control frames (e.g., DISC, unexpected RR/REJ)
+            }
+
+            if (isAlarmSet()) {
+                printf("Tx: Timeout occurred. Retransmitting frame (attempt %d/%d).\n",
+                    attempt, maxAttempts);
+                disableAlarm();
+                clearAlarm();
+                // volta ao for para retransmitir
             }
         }
-        
-        // If we exit the inner loop due to isAlarmSet() (timeout)
-        if (isAlarmSet()) {
-            printf("Tx: Timeout occurred. Retransmitting frame (Attempt %d/%d).\n", 
-                   getRetransmissionCount(), g_linkLayer.nRetransmissions);
-            disableAlarm();
-            clearAlarm();
-            // Loop continues (retransmission)
-        }
-    }
 
-    // If loop completes without success
-    printf("Tx: Failed to send frame after %d attempts (Max Retransmissions Reached).\n", g_linkLayer.nRetransmissions);
-    free(data_and_bcc2);
-    return -1; 
+        // Esgotou tentativas
+        printf("Tx: Failed to send frame after %d attempts (Max Retransmissions Reached).\n",
+            g_linkLayer.nRetransmissions);
+        free(data_and_bcc2);
+        return -1;
 }
 
 ////////////////////////////////////////////////
