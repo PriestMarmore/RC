@@ -407,9 +407,13 @@ int llwrite(const unsigned char *buf, int bufSize){
                     }
                     // REJ do Ns atual?
                     if (C_field == ((g_Ns == 0) ? C_REJ_0 : C_REJ_1)) {
-                        printf("Tx: Received REJ(%d). Retransmitting frame.\n", g_Ns);
+                        printf("Tx: Received REJ(%d). Retransmitting frame (Not counting as failure).\n", g_Ns);
                         disableAlarm();
                         clearAlarm();
+                        // CRITICAL FIX: Decrement attempt counter. The next iteration of the 'for' loop
+                        // will immediately increment it back up, thus ensuring REJ-driven retransmissions
+                        // don't count towards the max failure limit.
+                        attempt--; 
                         // Sai do while e volta ao for (nova tentativa)
                         break;
                     }
