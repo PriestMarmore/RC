@@ -16,6 +16,10 @@
 // MISC
 #define _POSIX_SOURCE 1 // POSIX compliant source
 
+// --- Role Definitions ---
+#define TX 0
+#define RX 1
+
 // Frame constants (BCC1 = A ^ C)
 #define FLAG 0x7E
 #define A_TX 0x03   // Address field for Transmitter (Commands) / Receiver (Replies)
@@ -42,6 +46,27 @@
 // Stuffing constants
 #define ESCAPE_BYTE 0x7D
 #define XOR_BYTE 0x20
+
+// -------------------------------------------------------
+
+// --- Configuration Constants ---
+#define MAX_ATTEMPTS 3
+#define TIMEOUT 4
+
+// --- Global Variable Definitions (To fix linker errors) ---
+int g_role = 0; // Role of the application (TX or RX, 0 or 1). Will be set in llopen.
+int g_alarm_flag = 0; // Flag set by the alarm signal handler.
+
+// --- External Declarations (Functions and variables defined elsewhere) ---
+extern int fd1;
+extern void disableAlarm();
+extern void clearAlarm();
+// CORRECTED: Match your serial_port.h signature: returns int, takes const unsigned char*
+extern int writeBytesSerialPort(const unsigned char *buf, int len); 
+extern void create_su_frame(unsigned char *frame, unsigned char A, unsigned char C);
+// REMOVED: extern int llwait_for_frame(...) to fix conflict with static definition.
+
+// -------------------------------------------------------
 
 // Global variables for connection state
 int fd1 = -1; // File descriptor for the serial port
@@ -212,6 +237,79 @@ int byte_destuffing(const unsigned char *stuffedData, int stuffedSize, unsigned 
     return destuffedSize;
 }
 
+// Helper function to read a single supervision frame with timeout/retry logic
+static int llwait_for_frame(unsigned char expected_A, unsigned char expected_C) {
+    enum State {
+        START,
+        FLAG_RCV,
+        A_RCV,
+        C_RCV,
+        BCC_RCV
+    } state = START;
+
+    unsigned char byte;
+    unsigned char frame[SU_FRAME_SIZE];
+
+    alarm(TIMEOUT);
+    while (state != BCC_RCV) {
+        // Read 1 byte at a time
+        int res = read(fd1, &byte, 1);
+
+        if (g_alarm_flag) {
+            // Timeout occurred
+            return 0; 
+        }
+
+        if (res <= 0) continue; // Skip if no byte read (but alarm flag should handle real timeouts)
+
+        switch (state) {
+            case START:
+                if (byte == FLAG) {
+                    state = FLAG_RCV;
+                    frame[0] = byte;
+                }
+                break;
+            case FLAG_RCV:
+                if (byte == FLAG) {
+                    frame[0] = byte; // Keep starting over if we see flags
+                } else if (byte == expected_A) {
+                    state = A_RCV;
+                    frame[1] = byte;
+                } else {
+                    state = START;
+                }
+                break;
+            case A_RCV:
+                if (byte == FLAG) {
+                    state = FLAG_RCV;
+                    frame[0] = byte;
+                } else if (byte == expected_C) {
+                    state = C_RCV;
+                    frame[2] = byte;
+                } else {
+                    // Unexpected C frame (e.g., RR instead of UA). Restart.
+                    state = START;
+                }
+                break;
+            case C_RCV:
+                if (byte == FLAG) {
+                    state = FLAG_RCV;
+                    frame[0] = byte;
+                } else if (byte == (frame[1] ^ frame[2])) { // Check BCC
+                    state = BCC_RCV;
+                    frame[3] = byte;
+                } else {
+                    // BCC mismatch. Frame corrupted. Restart.
+                    state = START;
+                }
+                break;
+            case BCC_RCV: // Should be unreachable
+                break;
+        }
+    }
+    alarm(0); // Stop alarm on successful frame read
+    return 1; // Success
+}
 
 ////////////////////////////////////////////////
 // LLOPEN (M2 & M4 Implementation)
@@ -232,7 +330,8 @@ int llopen(LinkLayer connectionParameters)
 
     if (connectionParameters.role == LlTx) {
         // --- TRANSMITTER LOGIC (M2 & M4) ---
-
+        g_role = TX; // CRITICAL FIX: Set the global role
+        
         // Setup the alarm signal handler
         setupAlarmHandler();
         
@@ -294,6 +393,11 @@ int llopen(LinkLayer connectionParameters)
 
     else if (connectionParameters.role == LlRx) {
         // --- RECEIVER LOGIC (M2) ---
+        g_role = RX; // CRITICAL FIX: Set the global role
+        
+        // CRITICAL FIX: Setup the alarm handler for the RX role, so llwait_for_frame in llclose 
+        // will not crash the process when SIGALRM is delivered.
+        setupAlarmHandler(); 
 
         unsigned char received_frame[SU_FRAME_SIZE];
         int bytes_read = 0;
@@ -648,17 +752,98 @@ int llread(unsigned char *packet)
 ////////////////////////////////////////////////
 // LLCLOSE
 ////////////////////////////////////////////////
+
 int llclose()
 {
-    // Restores original termios settings and closes the port
+    if (fd1 == -1) return -1;
+
+    int res = -1;
+
+    if (g_role == TX) {
+        printf("Tx: Initiating disconnection...\n");
+        unsigned char disc_frame_tx[SU_FRAME_SIZE];
+        
+        // 1. TX sends DISC (Command, uses A_TX address)
+        create_su_frame(disc_frame_tx, A_TX, C_DISC);
+        
+        for (int i = 1; i <= MAX_ATTEMPTS; i++) {
+            g_alarm_flag = 0;
+            printf("Tx: Sending DISC frame (attempt %d/%d)...\n", i, MAX_ATTEMPTS);
+            // CORRECTED: Use return value of writeBytesSerialPort
+            if (writeBytesSerialPort(disc_frame_tx, SU_FRAME_SIZE) < 0) { 
+                fprintf(stderr, "Tx: Error writing DISC frame.\n");
+            }
+
+            // 2. Wait for Receiver's DISC reply (Command from RX, uses A_RX address)
+            if (llwait_for_frame(A_RX, C_DISC)) { 
+                printf("Tx: Received DISC frame from Receiver. Sending final UA.\n");
+                
+                // 3. Send final UA frame (Reply to RX's command, uses A_TX address)
+                unsigned char ua_frame_tx[SU_FRAME_SIZE];
+                create_su_frame(ua_frame_tx, A_TX, C_UA); 
+                // CORRECTED: Use return value of writeBytesSerialPort
+                if (writeBytesSerialPort(ua_frame_tx, SU_FRAME_SIZE) < 0) {
+                     fprintf(stderr, "Tx: Error writing final UA frame.\n");
+                }
+
+                printf("Tx: Connection closed gracefully.\n");
+                res = 0;
+                break; // Handshake complete
+            } else {
+                if (i < MAX_ATTEMPTS) {
+                    printf("Tx: Timeout. Will retry.\n");
+                } else {
+                    fprintf(stderr, "Tx: Failed to complete DISC handshake after %d attempts.\n", MAX_ATTEMPTS);
+                    res = -1;
+                }
+            }
+        }
+    } 
+    else if (g_role == RX) {
+        printf("Rx: Waiting for DISC frame...\n");
+        
+        // 1. Wait for Transmitter's initial DISC (Command from TX, uses A_TX address)
+        if (llwait_for_frame(A_TX, C_DISC)) {
+            printf("Rx: Received valid DISC frame. Sending own DISC and waiting for final UA.\n");
+            
+            // 2. Send own DISC frame as reply (Command from RX, uses A_RX address)
+            unsigned char disc_frame_rx[SU_FRAME_SIZE];
+            create_su_frame(disc_frame_rx, A_RX, C_DISC); 
+            
+            // Send DISC multiple times until UA is received, or fail
+            for (int i = 1; i <= MAX_ATTEMPTS; i++) {
+                g_alarm_flag = 0;
+                // CORRECTED: Use return value of writeBytesSerialPort
+                if (writeBytesSerialPort(disc_frame_rx, SU_FRAME_SIZE) < 0) {
+                    fprintf(stderr, "Rx: Error writing DISC frame.\n");
+                }
+                printf("Rx: Sent DISC frame (attempt %d/%d). Waiting for final UA...\n", i, MAX_ATTEMPTS);
+                
+                // 3. Wait for Transmitter's final UA (Reply from TX, uses A_TX address)
+                if (llwait_for_frame(A_TX, C_UA)) {
+                    printf("Rx: Received final UA. Connection closed gracefully.\n");
+                    res = 0;
+                    break;
+                } else if (i == MAX_ATTEMPTS) {
+                    printf("Rx: Timed out waiting for final UA after %d attempts, closing connection anyway.\n", MAX_ATTEMPTS);
+                    res = -1;
+                }
+            }
+        } else {
+            // Timed out waiting for the initial DISC from TX
+            fprintf(stderr, "Rx: Timed out waiting for DISC frame. Aborting connection.\n");
+            res = -1;
+        }
+    }
+
+    // Common cleanup
     if (fd1 != -1) {
-        // disable any active alarm just in case
         disableAlarm(); 
         clearAlarm();
-        int res = close(fd1); 
+        close(fd1); 
         fd1 = -1;
         printf("Serial port closed.\n");
-        return res;
     }
-    return -1;
+
+    return res;
 }
