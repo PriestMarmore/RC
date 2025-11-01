@@ -467,6 +467,7 @@ int llread(unsigned char *packet)
     printf("Rx: Waiting for I-frame (Ns=%d expected)...\n", g_Nr);
 
     while (state != STOP) {
+        // We use a small buffer for safety, but read only 1 byte at a time for the state machine
         int res = read(fd1, &byte, 1);
         
         if (res <= 0) {
@@ -480,7 +481,7 @@ int llread(unsigned char *packet)
             data_start_idx = -1;
             
             // If the timeout was a read() timeout, return 0 to application layer
-            if (errno == EINTR || res == 0) return 0;
+            if (errno == EINTR || res == 0) return 0; // Return 0 bytes delivered
             
             continue;
         }
@@ -539,6 +540,7 @@ int llread(unsigned char *packet)
                     
                     state = START;
                     frame_idx = 0;
+                    return 0; // RETURN 0: Frame discarded, application should retry llread.
                 }
                 break;
             case DATA_RCV:
@@ -578,7 +580,7 @@ int llread(unsigned char *packet)
             unsigned char rr_frame[SU_FRAME_SIZE];
             create_su_frame(rr_frame, A_TX, rr_c);
             writeBytesSerialPort(rr_frame, SU_FRAME_SIZE);
-            return 0; // Discarded
+            return 0; // Discarded, application should retry llread.
         } else {
             // Unexpected Ns (Shouldn't happen in standard go-back-N, but safer to reject)
             fprintf(stderr, "Rx: Unexpected Ns (%d). Sending REJ(%d).\n", received_Ns, g_Nr);
@@ -586,7 +588,7 @@ int llread(unsigned char *packet)
             unsigned char rej_frame[SU_FRAME_SIZE];
             create_su_frame(rej_frame, A_TX, rej_c);
             writeBytesSerialPort(rej_frame, SU_FRAME_SIZE);
-            return -1;
+            return 0; // RETURN 0: Frame discarded, application should retry llread.
         }
     }
     
@@ -601,7 +603,7 @@ int llread(unsigned char *packet)
         unsigned char rej_frame[SU_FRAME_SIZE];
         create_su_frame(rej_frame, A_TX, rej_c);
         writeBytesSerialPort(rej_frame, SU_FRAME_SIZE);
-        return -1;
+        return 0; // RETURN 0: Frame discarded, application should retry llread.
     }
     
     // The last byte is the received BCC2
@@ -620,7 +622,7 @@ int llread(unsigned char *packet)
         unsigned char rej_frame[SU_FRAME_SIZE];
         create_su_frame(rej_frame, A_TX, rej_c);
         writeBytesSerialPort(rej_frame, SU_FRAME_SIZE);
-        return -1;
+        return 0; // RETURN 0: Frame discarded, application should retry llread.
     }
 
     // --- SUCCESS: Valid frame received, acknowledged, and data ready ---
